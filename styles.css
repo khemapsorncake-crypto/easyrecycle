@@ -10,3 +10,6 @@ button,.tab,.product-card,.add-round{touch-action:manipulation;-webkit-tap-highl
   dialog input,dialog textarea,dialog select{font-size:16px!important}
   .round-row input,.cart-bottom input,.calc-row input{font-size:16px!important}
 }
+#cloudStatus{display:inline-block;margin-top:4px;font-size:12px;font-weight:700;opacity:.9}
+#cloudStatus.ok{color:#d1fae5}#cloudStatus.bad{color:#fecaca}#cloudStatus.sync{color:#fef3c7}
+button:disabled{opacity:.55;cursor:not-allowed}

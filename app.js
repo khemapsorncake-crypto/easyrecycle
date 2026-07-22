@@ -8,121 +8,77 @@ const seed=[
  ['R013','ทองแดง','กก.',180],['R014','สแตนเลส','กก.',20],['R015','เก้าอี้','ชิ้น',5],
  ['R016','หม้อหุงข้าว','ชิ้น',20],['R017','เครื่องใช้ไฟฟ้า','ชิ้น',10],['R018','อื่น ๆ','กก.',1]
 ].map(x=>({id:uid(),code:x[0],name:x[1],unit:x[2],price:x[3]}));
-let products=JSON.parse(localStorage.getItem('rb_products')||'null')||seed;
-let bills=JSON.parse(localStorage.getItem('rb_bills')||'[]');
-let settings=JSON.parse(localStorage.getItem('rb_settings')||'null')||{shopName:'ร้านรับซื้อของเก่า',shopAddress:'',shopPhone:'',taxId:'',receiptFooter:'ขอบคุณที่มาใช้บริการ'};
-let cart=[],selectedProduct=null;
+const defaultSettings={shopName:'ร้านรับซื้อของเก่า',shopAddress:'',shopPhone:'',taxId:'',receiptFooter:'ขอบคุณที่มาใช้บริการ'};
+let products=[],bills=[],settings={...defaultSettings},cart=[],selectedProduct=null,db=null,cloudReady=false;
 const money=n=>Number(n||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2});
 const today=()=>new Date().toISOString().slice(0,10);
 const itemQty=i=>(i.rounds||[Number(i.qty)||0]).reduce((s,n)=>s+Number(n||0),0);
 const itemRounds=i=>(i.rounds&&i.rounds.length?i.rounds:[Number(i.qty)||0]).filter(n=>Number(n)>0);
-const save=()=>{localStorage.setItem('rb_products',JSON.stringify(products));localStorage.setItem('rb_bills',JSON.stringify(bills));localStorage.setItem('rb_settings',JSON.stringify(settings));};
+const cache=()=>{localStorage.setItem('rb_products_cache',JSON.stringify(products));localStorage.setItem('rb_bills_cache',JSON.stringify(bills));localStorage.setItem('rb_settings_cache',JSON.stringify(settings));};
+const setStatus=(text,type='sync')=>{const e=$('#cloudStatus');e.textContent=text;e.className=type};
+
+async function initCloud(){
+ const url=window.EASYRECYCLE_SUPABASE_URL||'',key=window.EASYRECYCLE_SUPABASE_ANON_KEY||'';
+ if(!url.startsWith('https://')||key.includes('PASTE_')){
+   products=JSON.parse(localStorage.getItem('rb_products_cache')||'null')||seed;
+   bills=JSON.parse(localStorage.getItem('rb_bills_cache')||'[]');
+   settings=JSON.parse(localStorage.getItem('rb_settings_cache')||'null')||defaultSettings;
+   setStatus('ยังไม่ได้ตั้งค่า Supabase — ใช้ข้อมูลเฉพาะเครื่อง','bad');renderAll();return;
+ }
+ try{
+   db=supabase.createClient(url,key);
+   setStatus('กำลังโหลดข้อมูล Cloud…','sync');
+   const [pr,br,sr]=await Promise.all([
+     db.from('products').select('*').order('code'),
+     db.from('bills').select('*').order('created_at',{ascending:false}),
+     db.from('app_settings').select('data').eq('id',1).maybeSingle()
+   ]);
+   if(pr.error)throw pr.error;if(br.error)throw br.error;if(sr.error)throw sr.error;
+   products=(pr.data||[]).map(p=>({...p,price:Number(p.price)}));
+   bills=(br.data||[]).map(r=>({...r.data,id:r.id,no:r.bill_no,date:r.bill_date,total:Number(r.total),totalWeight:Number(r.total_weight),totalRounds:r.total_rounds}));
+   settings=sr.data?.data||defaultSettings;
+   if(!products.length){
+     const ins=seed.map(({code,name,unit,price})=>({code,name,unit,price}));
+     const {data,error}=await db.from('products').insert(ins).select();if(error)throw error;
+     products=data.map(p=>({...p,price:Number(p.price)}));
+   }
+   if(!sr.data){await db.from('app_settings').upsert({id:1,data:settings});}
+   cloudReady=true;cache();setStatus('เชื่อม Cloud แล้ว • ทุกเครื่องเห็นข้อมูลเดียวกัน','ok');renderAll();
+ }catch(err){console.error(err);products=JSON.parse(localStorage.getItem('rb_products_cache')||'null')||seed;bills=JSON.parse(localStorage.getItem('rb_bills_cache')||'[]');settings=JSON.parse(localStorage.getItem('rb_settings_cache')||'null')||defaultSettings;setStatus('เชื่อม Cloud ไม่สำเร็จ — ตรวจ SQL / URL / Key','bad');renderAll();}
+}
 
 $('#buyDate').value=today();
 $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));$$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.tab).classList.add('active');renderAll()});
-
-function renderProducts(q=''){
- q=q.toLowerCase().trim();
- const list=products.filter(p=>(p.name+p.code).toLowerCase().includes(q));
- $('#productCards').innerHTML=list.map(p=>`<button class="product-card" onclick="askWeight('${p.id}')"><h3>${p.name}</h3><span>${p.code} • ต่อ ${p.unit}</span><b>฿${money(p.price)}</b><small>แตะเพื่อเริ่มชั่งรอบที่ 1</small></button>`).join('')||'<p>ไม่พบรายการ</p>';
- $('#productTable').innerHTML=products.map(p=>`<tr><td>${p.code}</td><td>${p.name}</td><td>${p.unit}</td><td>฿${money(p.price)}</td><td><button class="secondary" onclick="editProduct('${p.id}')">แก้ไข</button> <button class="remove" onclick="deleteProduct('${p.id}')">ลบ</button></td></tr>`).join('');
-}
+function renderProducts(q=''){q=q.toLowerCase().trim();const list=products.filter(p=>(p.name+p.code).toLowerCase().includes(q));$('#productCards').innerHTML=list.map(p=>`<button class="product-card" onclick="askWeight('${p.id}')"><h3>${p.name}</h3><span>${p.code} • ต่อ ${p.unit}</span><b>฿${money(p.price)}</b><small>แตะเพื่อเริ่มชั่งรอบที่ 1</small></button>`).join('')||'<p>ไม่พบรายการ</p>';$('#productTable').innerHTML=products.map(p=>`<tr><td>${p.code}</td><td>${p.name}</td><td>${p.unit}</td><td>฿${money(p.price)}</td><td><button class="secondary" onclick="editProduct('${p.id}')">แก้ไข</button> <button class="remove" onclick="deleteProduct('${p.id}')">ลบ</button></td></tr>`).join('')}
 $('#searchProduct').oninput=e=>renderProducts(e.target.value);
-
-window.askWeight=id=>{
- selectedProduct=products.find(p=>p.id===id);
- const existing=cart.find(i=>i.productId===id);
- $('#weightTitle').textContent=selectedProduct.name;
- $('#weightPrice').textContent=`ราคาซื้อ ฿${money(selectedProduct.price)} / ${selectedProduct.unit}`;
- $('#weightRoundLabel').textContent=`กำลังบันทึกรอบที่ ${(existing?.rounds?.length||0)+1}`;
- $('#weightInput').value='';
- $('#weightDialog').showModal();setTimeout(()=>$('#weightInput').focus(),100);
-};
-$('#addWeightBtn').onclick=e=>{
- e.preventDefault();
- const qty=Number($('#weightInput').value);
- if(!(qty>0))return alert('กรอกน้ำหนักหรือจำนวนให้ถูกต้อง');
- let item=cart.find(i=>i.productId===selectedProduct.id);
- if(item)item.rounds.push(qty);
- else cart.push({id:uid(),productId:selectedProduct.id,code:selectedProduct.code,name:selectedProduct.name,unit:selectedProduct.unit,price:selectedProduct.price,rounds:[qty]});
- $('#weightDialog').close();renderCart();
-};
-
-window.addRound=id=>{
- const item=cart.find(i=>i.id===id); selectedProduct=products.find(p=>p.id===item.productId)||item;
- $('#weightTitle').textContent=item.name;$('#weightPrice').textContent=`ราคาซื้อ ฿${money(item.price)} / ${item.unit}`;
- $('#weightRoundLabel').textContent=`กำลังบันทึกรอบที่ ${itemRounds(item).length+1}`;$('#weightInput').value='';$('#weightDialog').showModal();setTimeout(()=>$('#weightInput').focus(),100);
-};
+window.askWeight=id=>{selectedProduct=products.find(p=>p.id===id);const existing=cart.find(i=>i.productId===id);$('#weightTitle').textContent=selectedProduct.name;$('#weightPrice').textContent=`ราคาซื้อ ฿${money(selectedProduct.price)} / ${selectedProduct.unit}`;$('#weightRoundLabel').textContent=`กำลังบันทึกรอบที่ ${(existing?.rounds?.length||0)+1}`;$('#weightInput').value='';$('#weightDialog').showModal();setTimeout(()=>$('#weightInput').focus(),100)};
+$('#addWeightBtn').onclick=e=>{e.preventDefault();const qty=Number($('#weightInput').value);if(!(qty>0))return alert('กรอกน้ำหนักหรือจำนวนให้ถูกต้อง');let item=cart.find(i=>i.productId===selectedProduct.id);if(item)item.rounds.push(qty);else cart.push({id:uid(),productId:selectedProduct.id,code:selectedProduct.code,name:selectedProduct.name,unit:selectedProduct.unit,price:selectedProduct.price,rounds:[qty]});$('#weightDialog').close();renderCart()};
+window.addRound=id=>{const item=cart.find(i=>i.id===id);selectedProduct=products.find(p=>p.id===item.productId)||item;$('#weightTitle').textContent=item.name;$('#weightPrice').textContent=`ราคาซื้อ ฿${money(item.price)} / ${item.unit}`;$('#weightRoundLabel').textContent=`กำลังบันทึกรอบที่ ${itemRounds(item).length+1}`;$('#weightInput').value='';$('#weightDialog').showModal();setTimeout(()=>$('#weightInput').focus(),100)};
 window.removeRound=(id,index)=>{const item=cart.find(i=>i.id===id);item.rounds.splice(index,1);if(!item.rounds.length)cart=cart.filter(i=>i.id!==id);renderCart()};
 window.updateRound=(id,index,val)=>{const item=cart.find(i=>i.id===id),n=Number(val);if(n>0)item.rounds[index]=n;renderCart()};
 window.updatePrice=(id,val)=>{const item=cart.find(i=>i.id===id);item.price=Math.max(0,Number(val)||0);renderCart()};
-window.removeCart=id=>{cart=cart.filter(i=>i.id!==id);renderCart()};
-$('#clearCartBtn').onclick=()=>{if(!cart.length||confirm('ล้างรายการรับซื้อทั้งหมดหรือไม่?')){cart=[];renderCart()}};
+window.removeCart=id=>{cart=cart.filter(i=>i.id!==id);renderCart()};$('#clearCartBtn').onclick=()=>{if(!cart.length||confirm('ล้างรายการรับซื้อทั้งหมดหรือไม่?')){cart=[];renderCart()}};
+function renderCart(){$('#cartList').innerHTML=cart.map(i=>{const rounds=itemRounds(i),qty=itemQty(i),sum=qty*i.price;return `<div class="cart-item"><div class="cart-top"><div><b>${i.name}</b><small>${rounds.length} รอบ • รวม ${money(qty)} ${i.unit}</small></div><button class="remove" onclick="removeCart('${i.id}')">ลบ</button></div><div class="round-list">${rounds.map((r,x)=>`<div class="round-row"><label>รอบที่ ${x+1}<input type="number" min="0.01" step="0.01" value="${r}" onchange="updateRound('${i.id}',${x},this.value)"></label><span>${i.unit}</span><button class="round-delete" onclick="removeRound('${i.id}',${x})">×</button></div>`).join('')}</div><button class="add-round" onclick="addRound('${i.id}')">+ เพิ่มรอบชั่งที่ ${rounds.length+1}</button><div class="calc-row"><label>ราคา/${i.unit}<input type="number" min="0" step="0.01" value="${i.price}" onchange="updatePrice('${i.id}',this.value)"></label><div><span>${money(qty)} × ${money(i.price)}</span><b>฿${money(sum)}</b></div></div></div>`}).join('')||'<div class="empty-cart"><b>ยังไม่มีรายการ</b><p>เลือกรายการด้านซ้าย แล้วกรอกน้ำหนักรอบแรก</p></div>';const totalWeight=cart.filter(i=>i.unit==='กก.').reduce((s,i)=>s+itemQty(i),0),total=cart.reduce((s,i)=>s+itemQty(i)*i.price,0),totalRounds=cart.reduce((s,i)=>s+itemRounds(i).length,0);$('#totalWeight').textContent=money(totalWeight);$('#grandTotal').textContent=money(total);$('#totalRounds').textContent=totalRounds}
 
-function renderCart(){
- $('#cartList').innerHTML=cart.map(i=>{
-   const rounds=itemRounds(i),qty=itemQty(i),sum=qty*i.price;
-   return `<div class="cart-item">
-    <div class="cart-top"><div><b>${i.name}</b><small>${rounds.length} รอบ • รวม ${money(qty)} ${i.unit}</small></div><button class="remove" onclick="removeCart('${i.id}')">ลบ</button></div>
-    <div class="round-list">${rounds.map((r,x)=>`<div class="round-row"><label>รอบที่ ${x+1}<input type="number" min="0.01" step="0.01" value="${r}" onchange="updateRound('${i.id}',${x},this.value)"></label><span>${i.unit}</span><button class="round-delete" onclick="removeRound('${i.id}',${x})">×</button></div>`).join('')}</div>
-    <button class="add-round" onclick="addRound('${i.id}')">+ เพิ่มรอบชั่งที่ ${rounds.length+1}</button>
-    <div class="calc-row"><label>ราคา/${i.unit}<input type="number" min="0" step="0.01" value="${i.price}" onchange="updatePrice('${i.id}',this.value)"></label><div><span>${money(qty)} × ${money(i.price)}</span><b>฿${money(sum)}</b></div></div>
-   </div>`;
- }).join('')||'<div class="empty-cart"><b>ยังไม่มีรายการ</b><p>เลือกรายการด้านซ้าย แล้วกรอกน้ำหนักรอบแรก</p></div>';
- const totalWeight=cart.filter(i=>i.unit==='กก.').reduce((s,i)=>s+itemQty(i),0);
- const total=cart.reduce((s,i)=>s+itemQty(i)*i.price,0);
- const totalRounds=cart.reduce((s,i)=>s+itemRounds(i).length,0);
- $('#totalWeight').textContent=money(totalWeight);$('#grandTotal').textContent=money(total);$('#totalRounds').textContent=totalRounds;
-}
-
-$('#checkoutBtn').onclick=()=>{
- if(!cart.length)return alert('กรุณาเพิ่มรายการรับซื้อ');
- const seller=$('#sellerName').value.trim()||'ไม่ระบุชื่อ';
- const date=$('#buyDate').value||today();
- const bill={id:Date.now(),no:`RB-${date.replaceAll('-','')}-${String(bills.filter(b=>b.date===date).length+1).padStart(3,'0')}`,date,seller,phone:$('#sellerPhone').value.trim(),note:$('#sellerNote').value.trim(),payment:$('#paymentMethod').value,items:cart.map(i=>({...i,rounds:itemRounds(i),qty:itemQty(i)}))};
- bill.totalWeight=bill.items.filter(i=>i.unit==='กก.').reduce((s,i)=>s+itemQty(i),0);bill.totalRounds=bill.items.reduce((s,i)=>s+itemRounds(i).length,0);bill.total=bill.items.reduce((s,i)=>s+itemQty(i)*i.price,0);
- bills.unshift(bill);save();showReceipt(bill);cart=[];$('#sellerName').value='';$('#sellerPhone').value='';$('#sellerNote').value='';renderAll();
-};
-
-function showReceipt(b){
- $('#receiptContent').innerHTML=`<h2>${settings.shopName}</h2><p>${settings.shopAddress||''}${settings.shopPhone?'<br>โทร '+settings.shopPhone:''}${settings.taxId?'<br>เลขผู้เสียภาษี '+settings.taxId:''}</p><hr><h3>ใบรับซื้อ</h3><p><b>${b.no}</b><br>${new Date(b.date+'T12:00:00').toLocaleDateString('th-TH',{dateStyle:'long'})}<br>ผู้ขาย: ${b.seller}${b.phone?' • '+b.phone:''}</p>
- <table><thead><tr><th>รายการ / รอบชั่ง</th><th class="right">รวม</th></tr></thead><tbody>${b.items.map(i=>{const rounds=itemRounds(i),qty=itemQty(i);return `<tr><td><b>${i.name}</b><br><small>${rounds.map((r,x)=>`รอบ ${x+1}: ${money(r)} ${i.unit}`).join(' • ')}</small><br>${rounds.length} รอบ | ${money(qty)} ${i.unit} × ฿${money(i.price)}</td><td class="right">฿${money(qty*i.price)}</td></tr>`}).join('')}</tbody></table>
- <div class="receipt-summary"><div><span>จำนวนรอบชั่ง</span><b>${b.totalRounds||b.items.reduce((s,i)=>s+itemRounds(i).length,0)} รอบ</b></div><div><span>น้ำหนักรวม</span><b>${money(b.totalWeight)} กก.</b></div><div style="font-size:20px"><span>ยอดจ่าย</span><b>฿${money(b.total)}</b></div></div><p>ชำระโดย: ${b.payment}</p>${b.note?`<p>หมายเหตุ: ${b.note}</p>`:''}<hr><p>${settings.receiptFooter}</p><p>ผู้รับเงิน ____________________</p>`;
- $('#receiptDialog').showModal();
-}
-$('#printReceiptBtn').onclick=()=>print();$('#closeReceiptBtn').onclick=()=>$('#receiptDialog').close();
-window.viewReceipt=id=>showReceipt(bills.find(b=>b.id===id));
-window.deleteBill=id=>{if(confirm('ลบรายการนี้หรือไม่?')){bills=bills.filter(b=>b.id!==id);save();renderAll()}};
-
-function renderHistory(){
- const q=$('#historySearch').value.toLowerCase(),d=$('#historyDate').value;
- const list=bills.filter(b=>(!q||(b.seller+b.no+b.items.map(i=>i.name).join(' ')).toLowerCase().includes(q))&&(!d||b.date===d));
- $('#historyList').innerHTML=list.map(b=>`<div class="history-card"><div><b>${b.no}</b><p>${new Date(b.date+'T12:00:00').toLocaleDateString('th-TH')} • ${b.seller}</p><p>${b.items.length} รายการ • ${b.totalRounds||b.items.reduce((s,i)=>s+itemRounds(i).length,0)} รอบชั่ง • ${money(b.totalWeight)} กก.</p></div><div style="text-align:right"><b>฿${money(b.total)}</b><br><button class="secondary" onclick="viewReceipt(${b.id})">ใบรับซื้อ</button> <button class="remove" onclick="deleteBill(${b.id})">ลบ</button></div></div>`).join('')||'<p>ยังไม่มีประวัติ</p>';
-}
+$('#checkoutBtn').onclick=async()=>{if(!cart.length)return alert('กรุณาเพิ่มรายการรับซื้อ');const btn=$('#checkoutBtn');btn.disabled=true;btn.textContent='กำลังบันทึก…';try{const seller=$('#sellerName').value.trim()||'ไม่ระบุชื่อ',date=$('#buyDate').value||today();const no=`RB-${date.replaceAll('-','')}-${String((bills.filter(b=>b.date===date).length+1)).padStart(3,'0')}`;const bill={id:uid(),no,date,seller,phone:$('#sellerPhone').value.trim(),note:$('#sellerNote').value.trim(),payment:$('#paymentMethod').value,items:cart.map(i=>({...i,rounds:itemRounds(i),qty:itemQty(i)}))};bill.totalWeight=bill.items.filter(i=>i.unit==='กก.').reduce((s,i)=>s+itemQty(i),0);bill.totalRounds=bill.items.reduce((s,i)=>s+itemRounds(i).length,0);bill.total=bill.items.reduce((s,i)=>s+itemQty(i)*i.price,0);if(cloudReady){const row={bill_no:no,bill_date:date,seller:bill.seller,phone:bill.phone,note:bill.note,payment:bill.payment,total_weight:bill.totalWeight,total_rounds:bill.totalRounds,total:bill.total,data:bill};const {data,error}=await db.from('bills').insert(row).select().single();if(error)throw error;bill.id=data.id;}bills.unshift(bill);cache();showReceipt(bill);cart=[];$('#sellerName').value='';$('#sellerPhone').value='';$('#sellerNote').value='';renderAll()}catch(err){console.error(err);alert('บันทึกไม่สำเร็จ: '+(err.message||err))}finally{btn.disabled=false;btn.textContent='บันทึกและออกใบรับซื้อ'}};
+function showReceipt(b){$('#receiptContent').innerHTML=`<h2>${settings.shopName}</h2><p>${settings.shopAddress||''}${settings.shopPhone?'<br>โทร '+settings.shopPhone:''}${settings.taxId?'<br>เลขผู้เสียภาษี '+settings.taxId:''}</p><hr><h3>ใบรับซื้อ</h3><p><b>${b.no}</b><br>${new Date(b.date+'T12:00:00').toLocaleDateString('th-TH',{dateStyle:'long'})}<br>ผู้ขาย: ${b.seller}${b.phone?' • '+b.phone:''}</p><table><thead><tr><th>รายการ / รอบชั่ง</th><th class="right">รวม</th></tr></thead><tbody>${b.items.map(i=>{const rounds=itemRounds(i),qty=itemQty(i);return `<tr><td><b>${i.name}</b><br><small>${rounds.map((r,x)=>`รอบ ${x+1}: ${money(r)} ${i.unit}`).join(' • ')}</small><br>${rounds.length} รอบ | ${money(qty)} ${i.unit} × ฿${money(i.price)}</td><td class="right">฿${money(qty*i.price)}</td></tr>`}).join('')}</tbody></table><div class="receipt-summary"><div><span>จำนวนรอบชั่ง</span><b>${b.totalRounds} รอบ</b></div><div><span>น้ำหนักรวม</span><b>${money(b.totalWeight)} กก.</b></div><div style="font-size:20px"><span>ยอดจ่าย</span><b>฿${money(b.total)}</b></div></div><p>ชำระโดย: ${b.payment}</p>${b.note?`<p>หมายเหตุ: ${b.note}</p>`:''}<hr><p>${settings.receiptFooter}</p><p>ผู้รับเงิน ____________________</p>`;$('#receiptDialog').showModal()}
+$('#printReceiptBtn').onclick=()=>print();$('#closeReceiptBtn').onclick=()=>$('#receiptDialog').close();window.viewReceipt=id=>showReceipt(bills.find(b=>String(b.id)===String(id)));
+window.deleteBill=async id=>{if(!confirm('ลบรายการนี้หรือไม่?'))return;try{if(cloudReady){const {error}=await db.from('bills').delete().eq('id',id);if(error)throw error}bills=bills.filter(b=>String(b.id)!==String(id));cache();renderAll()}catch(err){alert('ลบไม่สำเร็จ: '+err.message)}};
+function renderHistory(){const q=$('#historySearch').value.toLowerCase(),d=$('#historyDate').value;const list=bills.filter(b=>(!q||(b.seller+b.no+b.items.map(i=>i.name).join(' ')).toLowerCase().includes(q))&&(!d||b.date===d));$('#historyList').innerHTML=list.map(b=>`<div class="history-card"><div><b>${b.no}</b><p>${new Date(b.date+'T12:00:00').toLocaleDateString('th-TH')} • ${b.seller}</p><p>${b.items.length} รายการ • ${b.totalRounds} รอบชั่ง • ${money(b.totalWeight)} กก.</p></div><div style="text-align:right"><b>฿${money(b.total)}</b><br><button class="secondary" onclick="viewReceipt('${b.id}')">ใบรับซื้อ</button> <button class="remove" onclick="deleteBill('${b.id}')">ลบ</button></div></div>`).join('')||'<p>ยังไม่มีประวัติ</p>'}
 $('#historySearch').oninput=renderHistory;$('#historyDate').onchange=renderHistory;
-$('#exportBtn').onclick=()=>{
- const rows=[['เลขที่','วันที่','ผู้ขาย','โทร','รายการ','รอบที่','น้ำหนัก/จำนวน','หน่วย','ราคาต่อหน่วย','ยอดรอบ','รวมต่อสินค้า','วิธีจ่าย']];
- bills.forEach(b=>b.items.forEach(i=>itemRounds(i).forEach((r,x)=>rows.push([b.no,b.date,b.seller,b.phone,i.name,x+1,r,i.unit,i.price,r*i.price,itemQty(i)*i.price,b.payment]))));
- download('\uFEFF'+rows.map(r=>r.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n'),'purchase-history-by-round.csv','text/csv');
-};
+$('#exportBtn').onclick=()=>{const rows=[['เลขที่','วันที่','ผู้ขาย','โทร','รายการ','รอบที่','น้ำหนัก/จำนวน','หน่วย','ราคาต่อหน่วย','ยอดรอบ','รวมต่อสินค้า','วิธีจ่าย']];bills.forEach(b=>b.items.forEach(i=>itemRounds(i).forEach((r,x)=>rows.push([b.no,b.date,b.seller,b.phone,i.name,x+1,r,i.unit,i.price,r*i.price,itemQty(i)*i.price,b.payment]))));download('\uFEFF'+rows.map(r=>r.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n'),'purchase-history-by-round.csv','text/csv')};
 function download(data,name,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=name;a.click();URL.revokeObjectURL(a.href)}
 $('#backupBtn').onclick=()=>download(JSON.stringify({products,bills,settings},null,2),'recycle-pos-backup.json','application/json');
-$('#restoreInput').onchange=async e=>{try{const x=JSON.parse(await e.target.files[0].text());if(!x.products||!x.bills)throw 0;products=x.products;bills=x.bills;settings=x.settings||settings;save();renderAll();alert('นำเข้าข้อมูลเรียบร้อย')}catch{alert('ไฟล์ไม่ถูกต้อง')}};
+$('#restoreInput').onchange=async e=>{try{const x=JSON.parse(await e.target.files[0].text());if(!x.products||!x.bills)throw 0;if(cloudReady&&!confirm('นำเข้าข้อมูลนี้ขึ้น Cloud และแทนข้อมูลเดิมทั้งหมดหรือไม่?'))return;if(cloudReady){await db.from('bills').delete().neq('bill_no','__never__');await db.from('products').delete().neq('code','__never__');const {data:pd,error:pe}=await db.from('products').insert(x.products.map(({code,name,unit,price})=>({code,name,unit,price}))).select();if(pe)throw pe;for(const b of x.bills){const row={bill_no:b.no,bill_date:b.date,seller:b.seller,phone:b.phone,note:b.note,payment:b.payment,total_weight:b.totalWeight,total_rounds:b.totalRounds,total:b.total,data:b};const {error}=await db.from('bills').insert(row);if(error)throw error}await db.from('app_settings').upsert({id:1,data:x.settings||defaultSettings});products=pd.map(p=>({...p,price:Number(p.price)}));}else products=x.products;bills=x.bills;settings=x.settings||settings;cache();await initCloud();alert('นำเข้าข้อมูลเรียบร้อย')}catch(err){console.error(err);alert('ไฟล์ไม่ถูกต้องหรือนำเข้าไม่สำเร็จ')}};
 
 $('#addProductBtn').onclick=()=>{$('#productForm').reset();$('#productId').value='';$('#productUnit').value='กก.';$('#productDialog').showModal()};
-window.editProduct=id=>{const p=products.find(x=>x.id===id);$('#productId').value=p.id;$('#productCode').value=p.code;$('#productName').value=p.name;$('#productUnit').value=p.unit;$('#productPrice').value=p.price;$('#productDialog').showModal()};
-window.deleteProduct=id=>{if(confirm('ลบรายการนี้?')){products=products.filter(x=>x.id!==id);save();renderAll()}};
-$('#saveProductBtn').onclick=e=>{e.preventDefault();const p={id:$('#productId').value||uid(),code:$('#productCode').value.trim(),name:$('#productName').value.trim(),unit:$('#productUnit').value.trim(),price:Number($('#productPrice').value)};if(!p.code||!p.name||!p.unit)return alert('กรอกข้อมูลให้ครบ');const i=products.findIndex(x=>x.id===p.id);i<0?products.push(p):products[i]=p;save();$('#productDialog').close();renderAll()};
-
-function renderSummary(){
- const t=today(),m=t.slice(0,7),tb=bills.filter(b=>b.date===t),mb=bills.filter(b=>b.date.startsWith(m));
- $('#todayAmount').textContent='฿'+money(tb.reduce((s,b)=>s+b.total,0));$('#todayBills').textContent=tb.length;$('#monthAmount').textContent='฿'+money(mb.reduce((s,b)=>s+b.total,0));$('#monthWeight').textContent=money(mb.reduce((s,b)=>s+b.totalWeight,0))+' กก.';
- const agg={};mb.flatMap(b=>b.items).forEach(i=>agg[i.name]=(agg[i.name]||0)+itemQty(i));const arr=Object.entries(agg).sort((a,b)=>b[1]-a[1]).slice(0,8),max=arr[0]?.[1]||1;
- $('#topProducts').innerHTML=arr.map(([n,v])=>`<div class="bar-row"><div class="bar-label"><span>${n}</span><b>${money(v)}</b></div><div class="bar"><i style="width:${v/max*100}%"></i></div></div>`).join('')||'<p>ยังไม่มีข้อมูลเดือนนี้</p>';
-}
+window.editProduct=id=>{const p=products.find(x=>String(x.id)===String(id));$('#productId').value=p.id;$('#productCode').value=p.code;$('#productName').value=p.name;$('#productUnit').value=p.unit;$('#productPrice').value=p.price;$('#productDialog').showModal()};
+window.deleteProduct=async id=>{if(!confirm('ลบรายการนี้?'))return;try{if(cloudReady){const {error}=await db.from('products').delete().eq('id',id);if(error)throw error}products=products.filter(x=>String(x.id)!==String(id));cache();renderAll()}catch(err){alert('ลบไม่สำเร็จ: '+err.message)}};
+$('#saveProductBtn').onclick=async e=>{e.preventDefault();const p={id:$('#productId').value||uid(),code:$('#productCode').value.trim(),name:$('#productName').value.trim(),unit:$('#productUnit').value.trim(),price:Number($('#productPrice').value)};if(!p.code||!p.name||!p.unit)return alert('กรอกข้อมูลให้ครบ');try{if(cloudReady){const payload={code:p.code,name:p.name,unit:p.unit,price:p.price};let res=$('#productId').value?await db.from('products').update(payload).eq('id',p.id).select().single():await db.from('products').insert(payload).select().single();if(res.error)throw res.error;p.id=res.data.id}const i=products.findIndex(x=>String(x.id)===String(p.id));i<0?products.push(p):products[i]=p;cache();$('#productDialog').close();renderAll()}catch(err){alert('บันทึกรายการไม่สำเร็จ: '+err.message)}};
+function renderSummary(){const t=today(),m=t.slice(0,7),tb=bills.filter(b=>b.date===t),mb=bills.filter(b=>b.date.startsWith(m));$('#todayAmount').textContent='฿'+money(tb.reduce((s,b)=>s+b.total,0));$('#todayBills').textContent=tb.length;$('#monthAmount').textContent='฿'+money(mb.reduce((s,b)=>s+b.total,0));$('#monthWeight').textContent=money(mb.reduce((s,b)=>s+b.totalWeight,0))+' กก.';const agg={};mb.flatMap(b=>b.items).forEach(i=>agg[i.name]=(agg[i.name]||0)+itemQty(i));const arr=Object.entries(agg).sort((a,b)=>b[1]-a[1]).slice(0,8),max=arr[0]?.[1]||1;$('#topProducts').innerHTML=arr.map(([n,v])=>`<div class="bar-row"><div class="bar-label"><span>${n}</span><b>${money(v)}</b></div><div class="bar"><i style="width:${v/max*100}%"></i></div></div>`).join('')||'<p>ยังไม่มีข้อมูลเดือนนี้</p>'}
 function loadSettings(){for(const k in settings){const e=$('#'+k);if(e)e.value=settings[k]||''}$('#brandTitle').textContent=settings.shopName||'ระบบรับซื้อของเก่า'}
-$('#saveSettingsBtn').onclick=()=>{settings={shopName:$('#shopName').value.trim(),shopAddress:$('#shopAddress').value.trim(),shopPhone:$('#shopPhone').value.trim(),taxId:$('#taxId').value.trim(),receiptFooter:$('#receiptFooter').value.trim()};save();loadSettings();alert('บันทึกแล้ว')};
-$('#resetBtn').onclick=()=>{if(confirm('ข้อมูลทั้งหมดจะถูกลบ ยืนยันหรือไม่?')){localStorage.clear();location.reload()}};
+$('#saveSettingsBtn').onclick=async()=>{settings={shopName:$('#shopName').value.trim(),shopAddress:$('#shopAddress').value.trim(),shopPhone:$('#shopPhone').value.trim(),taxId:$('#taxId').value.trim(),receiptFooter:$('#receiptFooter').value.trim()};try{if(cloudReady){const {error}=await db.from('app_settings').upsert({id:1,data:settings,updated_at:new Date().toISOString()});if(error)throw error}cache();loadSettings();alert('บันทึกแล้ว')}catch(err){alert('บันทึกไม่สำเร็จ: '+err.message)}};
+$('#resetBtn').onclick=async()=>{if(!confirm('ข้อมูลทั้งหมดจะถูกลบ ยืนยันหรือไม่?'))return;try{if(cloudReady){await db.from('bills').delete().neq('bill_no','__never__');await db.from('products').delete().neq('code','__never__');await db.from('app_settings').delete().eq('id',1)}localStorage.clear();location.reload()}catch(err){alert('ล้างข้อมูลไม่สำเร็จ: '+err.message)}};
 function renderAll(){renderProducts($('#searchProduct').value);renderCart();renderHistory();renderSummary();loadSettings()}
 let deferredPrompt;addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('#installBtn').classList.remove('hidden')});$('#installBtn').onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
-if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');renderAll();
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');initCloud();
