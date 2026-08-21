@@ -67,3 +67,30 @@ dialog{border:0;border-radius:16px;padding:18px;max-width:440px;width:calc(100% 
  .receipt-actions{display:grid;grid-template-columns:1fr 1fr}
  .receipt-actions button{width:100%;font-size:13px}
 }
+
+/* V1.5 printing: print from a dedicated body portal, not from dialog/popup */
+#printPortal{display:none}
+.image-capture-box{position:fixed;left:-10000px;top:0;width:760px;background:#fff;padding:24px;z-index:-1}
+.image-capture-box .receipt{background:#fff;color:#000}
+.receipt-grand{font-size:20px!important;font-weight:800}
+@media print{
+  body.printing > *:not(#printPortal){display:none!important}
+  body.printing #printPortal{display:block!important;background:#fff!important;color:#000!important}
+  body.printing #printPortal *{visibility:visible!important}
+  body.printing #printPortal .print-receipt{margin:0 auto;background:#fff;color:#000;font-family:system-ui,-apple-system,"Segoe UI","Noto Sans Thai",sans-serif}
+  body.printing #printPortal .print-receipt{text-align:center;line-height:1.35}
+  body.printing #printPortal table{width:100%;border-collapse:collapse;table-layout:fixed}
+  body.printing #printPortal th,body.printing #printPortal td{white-space:normal!important;word-break:break-word;overflow-wrap:anywhere;text-align:left;vertical-align:top;border-bottom:1px dashed #999}
+  body.printing #printPortal th:last-child,body.printing #printPortal td:last-child{text-align:right}
+  body.printing #printPortal tr{break-inside:avoid;page-break-inside:avoid}
+  body.printing #printPortal .receipt-summary,body.printing #printPortal h2,body.printing #printPortal h3{break-inside:avoid;page-break-inside:avoid}
+  body.printing #printPortal.print-a4 .print-receipt{width:100%;max-width:190mm;padding:4mm;font-size:12pt}
+  body.printing #printPortal.print-a4 th,body.printing #printPortal.print-a4 td{padding:3mm 1mm}
+  body.printing #printPortal.print-a4 th:last-child,body.printing #printPortal.print-a4 td:last-child{width:38mm}
+  body.printing #printPortal.print-80 .print-receipt{width:72mm;max-width:72mm;padding:1.5mm;font-size:10pt}
+  body.printing #printPortal.print-80 th,body.printing #printPortal.print-80 td{padding:1.6mm .5mm}
+  body.printing #printPortal.print-80 th:last-child,body.printing #printPortal.print-80 td:last-child{width:24mm}
+  body.printing #printPortal.print-80 small{font-size:8.5pt}
+  @page{margin:8mm}
+  body.printing #printPortal.print-80{@page{margin:0}}
+}
